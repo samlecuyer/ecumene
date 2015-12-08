@@ -11,6 +11,7 @@ import (
 	"github.com/samlecuyer/ecumene/mapping"
 	"github.com/samlecuyer/ecumene/query"
 	"github.com/samlecuyer/ecumene/util"
+	"code.google.com/p/sadbox/color"
 	"image"
 	"image/draw"
 	"log"
@@ -48,7 +49,19 @@ func (r *Renderer) ClipTo(lng0, lat0, lng1, lat1 float64) {
 }
 
 func (r *Renderer) ClipToMap() error {
-	r.bbox = r.m.Bounds()
+	b := r.m.Bounds()
+	x0, y0, _ := r.m.Srs.Forward(b[0], b[1])
+	x1, y1, _ := r.m.Srs.Forward(b[2], b[3])
+	r.bbox = geom.Bbox{x0, y0, x1, y1}
+
+	x0, y0, _ = r.m.Srs.Forward(b[0], b[3])
+	x1, y1, _ = r.m.Srs.Forward(b[2], b[1])
+	r.bbox = r.bbox.ExpandToFit(geom.Bbox{x0, y0, x1, y1})
+
+	x0, y0, _ = r.m.Srs.Forward(0, b[3])
+	x1, y1, _ = r.m.Srs.Forward(0, b[1])
+	r.bbox = r.bbox.ExpandToFit(geom.Bbox{x0, y0, x1, y1})
+
 	log.Println("clipped to: ", r.bbox)
 	return nil
 }
@@ -96,11 +109,10 @@ func (r *Renderer) Draw() image.Image {
 	ox, oy := (pxf-w)/2, (pyf-h)/2
 	img_box := [4]float64{ox, oy, ox + w, oy + h}
 
-	log.Println(img_box)
 	r.matrix = draw2d.NewMatrixFromRects(r.bbox, img_box)
 
 	for _, layer := range r.m.Layers {
-		q := query.NewQuery(r.bbox).Select(layer.SourceQuery())
+		q := query.NewQuery(r.m.Bounds()).Select(layer.SourceQuery())
 		if ds := layer.LoadSource(); ds != nil {
 			defer ds.Close()
 			for shp := range ds.Query(q) {
@@ -124,10 +136,45 @@ func (r *Renderer) Draw() image.Image {
 	return dest
 }
 
+func (r *Renderer) graticule(gc draw2d.GraphicContext) {
+	b := r.m.Bounds()
+	d2r := math.Pi/180.
+	gc.SetFillColor(AlphaHex("#ce4251"))
+	// iterate over all the latitudes
+	padding := 20 * d2r
+	dxy := 0.001
+	for phi := b[1]; phi > b[3]; phi -= padding {
+		x, y, _ := r.m.Srs.Forward(b[0], phi)
+		x, y = r.matrix.TransformPoint(x, y)
+		gc.MoveTo(phi, b[0])
+		for lam := b[0] + dxy; lam < b[2]; lam += dxy {
+			x, y, _ = r.m.Srs.Forward(lam, phi)
+			x, y = r.matrix.TransformPoint(x, y)
+			gc.LineTo(x, y)
+		}
+		gc.Stroke()
+	}
+	for lam := b[0]; lam <= b[2]; lam += padding {
+		x, y, _ := r.m.Srs.Forward(lam, b[1])
+		x, y = r.matrix.TransformPoint(x, y)
+		gc.MoveTo(lam, b[1])
+		for phi := b[1] + dxy; phi >= b[3]; phi -= dxy {
+			x, y, _ = r.m.Srs.Forward(lam, phi)
+			x, y = r.matrix.TransformPoint(x, y)
+			gc.LineTo(x, y)
+		}
+		gc.Stroke()
+	}
+}
+
 func (r *Renderer) coordsAsPath(coords geom.Coordinates) *draw2d.Path {
 	path := new(draw2d.Path)
 	for i, point := range coords {
-		x, y := r.matrix.TransformPoint(point[0], point[1])
+		x, y, _ := r.m.Srs.Forward(point[0], point[1])
+		x, y = r.matrix.TransformPoint(x, y)
+		if math.IsNaN(x) || math.IsInf(x, 1) {
+			continue
+		}
 		if i == 0 {
 			path.MoveTo(x, y)
 		} else {

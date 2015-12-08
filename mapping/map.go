@@ -9,7 +9,13 @@ import (
 	"encoding/xml"
 	"fmt"
 	"github.com/samlecuyer/ecumene/geom"
+	proj "github.com/samlecuyer/projectron"
 	"os"
+	"math"
+)
+
+const (
+	defaultSrsOut string = "+title=WGS 84 / Pseudo-Mercator +proj=merc +a=6378137 +b=6378137 +lat_ts=0.0 +lon_0=0.0 +x_0=0.0 +y_0=0 +k=1.0 +units=m +nadgrids=@null +no_defs"
 )
 
 type Map struct {
@@ -19,6 +25,8 @@ type Map struct {
 
 	Stroke  color.Hex `xml:"stroke,attr"`
 	BgColor color.Hex `xml:"bgcolor,attr"`
+
+	Srs proj.Projection `xml:"srs,attr"`
 
 	bounds geom.Bbox
 }
@@ -34,11 +42,18 @@ func (m *Map) Bounds() geom.Bbox {
 }
 
 func (m *Map) setBounds(extent string) (err error) {
-	_, err = fmt.Sscanf(extent, "%f %f %f %f", &m.bounds[0], &m.bounds[3], &m.bounds[2], &m.bounds[1])
+	factor := math.Pi / 180.0
+	var x0, y0, x1, y1 float64
+	_, err = fmt.Sscanf(extent, "%f %f %f %f", &x0, &y0, &x1, &y1)
+	m.bounds[0] = x0 * factor
+	m.bounds[1] = y1 * factor
+	m.bounds[2] = x1 * factor
+	m.bounds[3] = y0 * factor
 	return
 }
 
 func (m *Map) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var err error
 	for _, attr := range start.Attr {
 		if attr.Name.Local == "extent" {
 			m.setBounds(attr.Value)
@@ -46,7 +61,17 @@ func (m *Map) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 		if attr.Name.Local == "bgcolor" {
 			m.BgColor = color.Hex(attr.Value)
 		}
+		if attr.Name.Local == "srs" {
+			m.Srs, _ = proj.NewProjection(attr.Value)
+		}
 	}
+	if m.Srs == nil {
+		m.Srs, err = proj.NewProjection(defaultSrsOut)
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	}
+
 	for {
 		e, err := d.Token()
 		if err != nil {

@@ -10,12 +10,21 @@ import (
 	"github.com/samlecuyer/ecumene/query"
 	"github.com/samlecuyer/ecumene/util"
 	"github.com/samlecuyer/go-shp"
+	"github.com/samlecuyer/projectron"
 	"reflect"
 	"strings"
+	"math"
 )
+
+const (
+	defaultSrs = "+title=WGS 84 (long/lat) +proj=longlat +ellps=WGS84 +datum=WGS84 +units=degrees"
+)
+
+var d2r = math.Pi / 180.0
 
 type shpSource struct {
 	r *shp.Reader
+	srs projectron.Projection
 }
 
 func (s *shpSource) Close() {
@@ -30,6 +39,7 @@ func (s *shpSource) Query(q *query.Query) chan geom.Shape {
 
 type shpPolygon struct {
 	p     *shp.Polygon
+	srs projectron.Projection
 	attrs map[string]string
 }
 
@@ -48,6 +58,10 @@ func (p *shpPolygon) Polygon() geom.Multiline {
 	pgz := p.p
 	lines := make(geom.Multiline, len(pgz.Parts))
 	var length int32
+	factor := 1.0
+	if p.srs.IsLngLat() {
+		factor = d2r
+	}
 	for i, idx := range pgz.Parts {
 		ln := len(pgz.Parts)
 		if i+1 >= ln {
@@ -61,7 +75,7 @@ func (p *shpPolygon) Polygon() geom.Multiline {
 
 		lines[i] = make(geom.Coordinates, length)
 		for j, point := range pgz.Points[idx : idx+length] {
-			lng, lat := util.Gps2webmerc(point.X, point.Y)
+			lng, lat, _ := p.srs.Inverse(point.X * factor, point.Y * factor)
 			lines[i][j] = geom.Point{lng, lat}
 		}
 	}
@@ -70,6 +84,7 @@ func (p *shpPolygon) Polygon() geom.Multiline {
 
 type shpPolygonZ struct {
 	*shp.PolygonZ
+	srs projectron.Projection
 	attrs map[string]string
 }
 
@@ -87,6 +102,10 @@ func (p *shpPolygonZ) Bbox() geom.Bbox {
 func (pgz *shpPolygonZ) Polygon() geom.Multiline {
 	lines := make(geom.Multiline, len(pgz.Parts))
 	var length int32
+	factor := 1.0
+	if pgz.srs.IsLngLat() {
+		factor = d2r
+	}
 	for i, idx := range pgz.Parts {
 		ln := len(pgz.Parts)
 		if i+1 >= ln {
@@ -97,7 +116,7 @@ func (pgz *shpPolygonZ) Polygon() geom.Multiline {
 
 		lines[i] = make(geom.Coordinates, length)
 		for j, point := range pgz.Points[idx : idx+length] {
-			lng, lat := util.Gps2webmerc(point.X, point.Y)
+			lng, lat, _ := pgz.srs.Inverse(point.X * factor, point.Y * factor)
 			lines[i][j] = geom.Point{lng, lat}
 		}
 	}
@@ -106,6 +125,7 @@ func (pgz *shpPolygonZ) Polygon() geom.Multiline {
 
 type shpPolyLineM struct {
 	*shp.PolyLineM
+	srs projectron.Projection
 	attrs map[string]string
 }
 
@@ -123,6 +143,10 @@ func (p *shpPolyLineM) Bbox() geom.Bbox {
 func (pgz *shpPolyLineM) Paths() geom.Multiline {
 	lines := make(geom.Multiline, len(pgz.Parts))
 	var length int32
+	factor := 1.0
+	if pgz.srs.IsLngLat() {
+		factor = d2r
+	}
 	for i, idx := range pgz.Parts {
 		ln := len(pgz.Parts)
 		if i+1 >= ln {
@@ -133,7 +157,7 @@ func (pgz *shpPolyLineM) Paths() geom.Multiline {
 
 		lines[i] = make(geom.Coordinates, length)
 		for j, point := range pgz.Points[idx : idx+length] {
-			lng, lat := util.Gps2webmerc(point.X, point.Y)
+			lng, lat, _ := pgz.srs.Inverse(point.X * factor, point.Y * factor)
 			lines[i][j] = geom.Point{lng, lat}
 		}
 	}
@@ -142,6 +166,7 @@ func (pgz *shpPolyLineM) Paths() geom.Multiline {
 
 type shpPolyLine struct {
 	*shp.PolyLine
+	srs projectron.Projection
 	attrs map[string]string
 }
 
@@ -159,6 +184,10 @@ func (p *shpPolyLine) Bbox() geom.Bbox {
 func (pgz *shpPolyLine) Paths() geom.Multiline {
 	lines := make(geom.Multiline, len(pgz.Parts))
 	var length int32
+	factor := 1.0
+	if pgz.srs.IsLngLat() {
+		factor = d2r
+	}
 	for i, idx := range pgz.Parts {
 		ln := len(pgz.Parts)
 		if i+1 >= ln {
@@ -169,7 +198,7 @@ func (pgz *shpPolyLine) Paths() geom.Multiline {
 
 		lines[i] = make(geom.Coordinates, length)
 		for j, point := range pgz.Points[idx : idx+length] {
-			lng, lat := util.Gps2webmerc(point.X, point.Y)
+			lng, lat, _ := pgz.srs.Inverse(point.X * factor, point.Y * factor)
 			lines[i][j] = geom.Point{lng, lat}
 		}
 	}
@@ -199,11 +228,17 @@ func (s *shpSource) searchFor(q *query.Query, ch chan geom.Shape) {
 	defer close(ch)
 	defer s.r.Close()
 
+	factor := 1.0
+	if s.srs.IsLngLat() {
+		factor = d2r
+	}
 	b := s.r.BBox()
-	x0, y0 := util.Gps2webmerc(b.MinX, b.MaxY)
-	x1, y1 := util.Gps2webmerc(b.MaxX, b.MinY)
+	x0, y0, _ := s.srs.Inverse(b.MinX * factor, b.MaxY * factor)
+	x1, y1, _ := s.srs.Inverse(b.MaxX * factor, b.MinY * factor)
 	b3 := geom.Bbox{x0, y0, x1, y1}
+	fmt.Println("b3: ", b3)
 
+	fmt.Println("qb: ", q.Bounds)
 	if !b3.Overlaps(q.Bounds) {
 		return
 	}
@@ -228,8 +263,8 @@ func (s *shpSource) searchFor(q *query.Query, ch chan geom.Shape) {
 	for s.r.Next() {
 		n, p := s.r.Shape()
 		b := p.BBox()
-		x0, y0 = util.Gps2webmerc(b.MinX, b.MaxY)
-		x1, y1 = util.Gps2webmerc(b.MaxX, b.MinY)
+		x0, y0, _ = s.srs.Inverse(b.MinX * factor, b.MaxY * factor)
+		x1, y1, _ = s.srs.Inverse(b.MaxX * factor, b.MinY * factor)
 		b3 = geom.Bbox{x0, y0, x1, y1}
 
 		if b3.Overlaps(q.Bounds) {
@@ -243,13 +278,13 @@ func (s *shpSource) searchFor(q *query.Query, ch chan geom.Shape) {
 			}
 			switch underlying := p.(type) {
 			case *shp.Polygon:
-				ch <- &shpPolygon{underlying, attrs}
+				ch <- &shpPolygon{underlying, s.srs, attrs}
 			case *shp.PolygonZ:
-				ch <- &shpPolygonZ{underlying, attrs}
+				ch <- &shpPolygonZ{underlying, s.srs, attrs}
 			case *shp.PolyLine:
-				ch <- &shpPolyLine{underlying, attrs}
+				ch <- &shpPolyLine{underlying, s.srs, attrs}
 			case *shp.PolyLineM:
-				ch <- &shpPolyLineM{underlying, attrs}
+				ch <- &shpPolyLineM{underlying, s.srs, attrs}
 			case *shp.Point:
 				ch <- &shpPoint{underlying.X, underlying.Y, attrs}
 			default:
@@ -264,5 +299,6 @@ func createShpSource(name string) (DataSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &shpSource{f}, nil
+	srs, _ := projectron.NewProjection(defaultSrs)
+	return &shpSource{r:f, srs: srs}, nil
 }
